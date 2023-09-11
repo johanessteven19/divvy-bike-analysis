@@ -1,0 +1,547 @@
+---
+title: "Analysing Bike Trip Data to Increase Membership"
+output:
+  html_document:
+    df_print: paged
+  html_notebook:
+    theme: readable
+editor_options:
+  markdown:
+    wrap: 72
+---
+# Setup
+First step is to install the required packages.
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+```
+
+Then, import the data into a dataframe.
+
+```{r}
+jan_df = read_csv('./data/202201-divvy-tripdata.csv')
+feb_df = read_csv('./data/202202-divvy-tripdata.csv')
+mar_df = read_csv('./data/202203-divvy-tripdata.csv')
+apr_df = read_csv('./data/202204-divvy-tripdata.csv')
+may_df = read_csv('./data/202205-divvy-tripdata.csv')
+jun_df = read_csv('./data/202206-divvy-tripdata.csv')
+jul_df = read_csv('./data/202207-divvy-tripdata.csv')
+aug_df = read_csv('./data/202208-divvy-tripdata.csv')
+sep_df = read_csv('./data/202209-divvy-tripdata.csv')
+oct_df = read_csv('./data/202210-divvy-tripdata.csv')
+nov_df = read_csv('./data/202211-divvy-tripdata.csv')
+dec_df = read_csv('./data/202212-divvy-tripdata.csv')
+```
+
+```{r}
+library(janitor)
+```
+# Data Cleaning
+
+Next step is to combine all the monthly data together to form a yearly
+data, so that we may analyze the whole year instead of just a single
+month.
+
+To do so, we must first check if all the column names and datatypes in
+the dataframes are consistent with one another to prevent issues from
+occuring during the merging process.
+
+```{r}
+compare_df_cols_same(
+  jan_df, 
+  feb_df, 
+  mar_df, 
+  apr_df, 
+  may_df, 
+  jun_df, 
+  jul_df, 
+  aug_df, 
+  sep_df, 
+  oct_df, 
+  nov_df, 
+  dec_df,
+  bind_method = c("bind_rows", "rbind"),
+  verbose = TRUE
+)
+```
+Since the function returns a TRUE value, we can go ahead with the
+merging of the dataframes. This can be done effectively by using the
+`bind` function from the `dplyr` package.
+
+```{r}
+year_2022 <- bind_rows(
+              jan_df, 
+              feb_df, 
+              mar_df, 
+              apr_df, 
+              may_df, 
+              jun_df, 
+              jul_df, 
+              aug_df, 
+              sep_df, 
+              oct_df, 
+              nov_df, 
+              dec_df
+            )
+```
+
+Let's check out the resulting dataframe:
+
+```{r}
+head(year_2022)
+```
+
+```{r}
+glimpse(year_2022)
+```
+
+```{r}
+member_count <- year_2022 %>% tabyl(member_casual)
+print(member_count)
+```
+
+```{r}
+member_tabyl <- year_2022 %>% tabyl(member_casual, rideable_type)
+print(member_tabyl)
+```
+The tabyl above shows how casuals can pick between classic bikes, docked bikes, and electric bikes, while members can only pick between classic bikes and electric bikes. Since this seems like a point of interest, I did a bit of research on the internet and found out that near the end of 2020, Divvy introduced the classic bike as a replacement for the docked bikes. Since then, members can only choose between either class or electric bikes, while casual members can pick between the three. Therefore, I will combine the classic bike and docked bike so that I can get a proper comparison of bike preference between casuals and members.
+
+```{r}
+year_2022$rideable_type[year_2022$rideable_type == 'docked_bike'] <- 'classic_bike'
+```
+
+
+```{r}
+##sort(unique(year_2022$start_station_name))
+```
+
+```{r}
+year_2022 <- year_2022 %>% 
+  mutate(day_of_ride = weekdays(as.Date(year_2022$started_at)))
+```
+
+```{r}
+head(year_2022)
+```
+
+```{r}
+year_2022 <- year_2022 %>% 
+  mutate(month_of_ride = month.name[month(as.Date(year_2022$started_at))])
+```
+
+```{r}
+head(year_2022)
+```
+
+```{r}
+year_2022 <- year_2022 %>% 
+  mutate(hour_of_ride = hour(year_2022$started_at))
+head(year_2022)
+```
+
+```{r}
+year_2022 <- year_2022 %>% 
+  mutate(ride_length = difftime(year_2022$ended_at, year_2022$started_at, units="mins"))
+head(year_2022)
+```
+
+```{r}
+library(skimr)
+skim_without_charts(year_2022)
+```
+
+The number of rows in the data matches the number of unique ride_id,
+meaning I don't need to look for duplicate trips.
+
+The data summary above highlights several issues with the data: \*
+ride_length that are negative (should be impossible because it is a
+measure of time length) \* ride_length that are extremely high (41387.25
+mins equal to almost 29 days) \* missing data in `end_lat` and `end_lng`
+\* missing data in `start_station_name`, `start_station_id`,
+`end_station_name`, and `end_station_id`
+
+Several trips are noticeably long, much longer than the average trip
+length (16.59 mins). Taking a look at the Divvy bike website (where the
+data originated from), the longest bike trip they offer are 3-hour rides
+for Day Pass holders. Each minute after the 3 hours are up will incur an
+extra charge. Therefore, it is reasonable to assume that rides should be
+capped at 180 minutes.
+
+```{r filtering out trips with invalid length}
+year_2022_filtered <- filter(year_2022, ride_length > 0 & ride_length <= 180)
+```
+
+Looking through the filtered data, I noticed several trips that are
+oddly short with the same starting and ending stations. I assume these
+trips are either false starts or other similar mistakes done by the
+users. Either way, I will remove these trips from the data set because
+they are not relevant to our aims.
+
+```{r }
+year_2022_same_stations <- filter(year_2022_filtered, start_station_name == end_station_name)
+skim_without_charts(year_2022_same_stations)
+```
+
+```{r}
+year_2022_same_stations_NA <- filter(year_2022_same_stations, ride_length <= 1)
+head(year_2022_same_stations_NA)
+```
+
+```{r}
+year_2022_filtered <- anti_join(year_2022_filtered, year_2022_same_stations_NA)
+skim_without_charts(year_2022_filtered)
+```
+
+
+```{r}
+filter(year_2022_filtered, start_station_name == end_station_name)
+```
+
+Next up is to clean up rows with missing end longitude and latitude values. I will separate them for now to take a closer look at it:
+
+```{r }
+df_NA <- filter(year_2022_filtered, is.na(end_lat) | is.na(end_lng))
+skim_without_charts(df_NA)
+```
+
+All 418 rows with missing end_lat and end_lng values have missing
+end_station_name and end_station_id, which makes sense. Let's
+investigate the table further.
+
+```{r}
+summarise(df_NA, mean_length_NA = mean(ride_length))
+summarise(year_2022_filtered, mean_length_overall = mean(ride_length))
+```
+
+```{r}
+NA_tabyl <- df_NA %>% tabyl(member_casual, rideable_type)
+print(NA_tabyl)
+```
+
+The average ride_length of these trips with missing end values are much
+higher than the rest. It is also evident that the riders of these trips
+are casual members that are riding on docked_bike. With these
+information, I dare to make a guess that these data show trips that
+ended abnormally outside the bike stations, either because of traffic
+accidents, bike malfunctions, etc. This theory is further supported by
+the fact that majority of the riders are casuals that are perhaps
+renting a bike for the first time and not fully understanding how the
+bike rental system works, thus not being able to safely dock the bikes
+in proper stations.
+
+Either way, there are only 418 trips that are in this category, which
+only accounts for less than 0.01% of the overall data. So, it can be
+safely removed without affecting the accuracy of the analysis.
+
+```{r}
+year_2022_filtered <- anti_join(year_2022_filtered, df_NA)
+skim_without_charts(year_2022_filtered)
+```
+There are still at least 831946 rows with missing station data. Let's take a closer look at them.
+
+```{r}
+df_station_NA <- filter(year_2022_filtered, is.na(start_station_name) | is.na(start_station_id) | is.na(end_station_name) | is.na(end_station_id))
+
+skim_without_charts(df_station_NA)
+```
+
+```{r}
+summarize(df_station_NA, mean_trip_length = mean(ride_length))
+```
+Looking at the data, there are several data with missing station names that have suspiciously short ride length. Before when I was filtering out short trips, I did so because they had the same start and end stations, indicating that they were possibly false starts. Now, with missing start and end station data, I think it is also quite possible that they could be false starts. So, I will also remove trips that are less than 1 minute long, with missing start and end station data.
+
+As for the rest, it turns out that Divvy allows bikes to be rented and returned from outside stations, explaining the missing data. So, I will keep the others.
+
+```{r}
+df_station_NA2 <- filter(df_station_NA, ride_length < 1 & is.na(start_station_name) & is.na(start_station_id) & is.na(end_station_name) & is.na(end_station_id))
+head(df_station_NA2)
+```
+```{r}
+year_2022_filtered <- anti_join(year_2022_filtered, df_station_NA2)
+skim_without_charts(year_2022_filtered)
+```
+```{r}
+sort_trips <- year_2022_filtered %>% arrange(ride_length)
+sort_trips
+```
+Applying this concept of false starts to the original dataframe, I found a lot of trips that are also really short and is missing either one of station data, strongly implying them being false trips as well. These data will be removed.
+
+```{r}
+sort_trips <- filter(sort_trips, (is.na(start_station_name) | is.na(end_station_name)) & ride_length < 1 )
+skim_without_charts(sort_trips)
+```
+
+```{r}
+year_2022_filtered <- anti_join(year_2022_filtered, sort_trips)
+skim_without_charts(year_2022_filtered)
+```
+
+```{r}
+sort_trips_2 <- year_2022_filtered %>% arrange(ride_length)
+sort_trips_2
+```
+
+Even after all this data cleaning, there are still trips with nonsensical length. Sorting it by ride_length reveals how some trips last for only 1 second, which doesn't make sense. I then noticed how some of these trips have station IDs like "Hubbard Bike-checking (LBS-WH-TEST)", which implies it is an irregular station. Doing some research on the internet leads me to realizing that some stations are used only as maintenance/service stations. These stations are:
+
+- Base - 2132 W Hubbard Warehouse
+- Base - 2132 W Hubbard
+- HUBBARD ST BIKE CHECKING (LBS-WH-TEST)
+- hubbard_test_lws
+- WATSON TESTING - DIVVY
+- WEST CHI-WATSON
+
+Therefore, I will remove them from the overall data.
+
+```{r}
+service_trips <- filter(year_2022_filtered, 
+                               start_station_name == "Base - 2132 W Hubbard Warehouse" |
+                               end_station_name == "Base - 2132 W Hubbard Warehouse" |
+                               start_station_name == "Base - 2132 W Hubbard" |
+                               end_station_name == "Base - 2132 W Hubbard" |
+                               start_station_name == "HUBBARD ST BIKE CHECKING (LBS-WH-TEST)" |
+                               end_station_name == "HUBBARD ST BIKE CHECKING (LBS-WH-TEST)" | 
+                               start_station_name == "hubbard_test_lws" |
+                               end_station_name == "hubbard_test_lws" |
+                               start_station_name == "WATSON TESTING - DIVVY" |
+                               end_station_name == "WATSON TESTING - DIVVY" |
+                               start_station_name == "WEST CHI-WATSON" | 
+                               end_station_name == "WEST CHI-WATSON"
+                        )
+skim_without_charts(service_trips)
+```
+
+```{r}
+year_2022_filtered <- anti_join(year_2022_filtered, service_trips)
+skim_without_charts(year_2022_filtered)
+```
+
+```{r}
+sort_trips_3 <- year_2022_filtered %>% arrange(ride_length)
+sort_trips_3
+```
+
+Despite all my cleaning efforts on the data, there are still trips that are seconds long. I will now take a much closer look at them.
+
+```{r}
+filter(sort_trips_3, start_station_name == "Lincoln Ave & Roscoe St" & end_station_name == "N Paulina St & Lincoln Ave")
+```
+
+The shortest trip on the data is from Lincoln Ave & Roscoe St station to N Paulina St & Lincoln Ave station. I tried putting these stations on Google Maps and it turns out that these two stations are only 12 meters apart. While difficult and unreasonable, it is not strange that trips from these two stations have been marked as 1 second long by the app. Therefore, I can't rule out trips that are only seconds long. As it won't really affect the analysis, I will be keeping those trips instead.
+
+Therefore, I am now done with the data cleaning process and will be moving on to the Analysis step.
+
+```{r}
+# year_2022_filtered %>% write.csv(file = "./data/all_trips_2022_cleaned_v1.csv")
+```
+
+# Analysis
+```{r}
+member_tabyl <- tabyl(year_2022_filtered, member_casual)
+member_tabyl$percent <- member_tabyl$percent * 100
+```
+```{r}
+member_proportion <- ggplot(data = member_tabyl) + 
+  geom_bar(mapping = aes(x = member_casual, y = percent), stat='identity', width = 0.4) +
+  labs(title = "Bike Trips by Member Type",
+       x = "Member Type",
+       y = "Percentage")
+member_proportion
+```
+
+The data shows that there are more annual membership holders than casual riders during the entirety of 2022. Members account for 59% of all trips, while casuals account for almost 41%.
+
+```{r}
+member_tabyl_rideable <- year_2022_filtered %>% tabyl(member_casual, rideable_type)
+print(member_tabyl_rideable)
+```
+```{r}
+member_tabyl_rideable$total <- 
+  member_tabyl_rideable$classic_bike + member_tabyl_rideable$electric_bike
+
+member_tabyl_rideable$classic_percentage <- 
+  member_tabyl_rideable$classic_bike / member_tabyl_rideable$total * 100
+
+member_tabyl_rideable$electric_percentage <- 
+  member_tabyl_rideable$electric_bike / member_tabyl_rideable$total * 100
+
+data_long <- pivot_longer(member_tabyl_rideable, cols = 
+                          c(classic_percentage, electric_percentage), 
+                          names_to = "bike_type", 
+                          values_to = "percentage")
+```
+
+```{r}
+ggplot(data_long, aes(x = member_casual, y = percentage, fill = bike_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Bike Usage by Member Type",
+       x = "Member Type",
+       y = "Percentage") +
+  scale_fill_discrete(name = "Bike Type", labels = c("Classic Bike", "Electric Bike")) +
+  theme_minimal()
+```
+The data also shows that casual riders prefer electric bikes over classic bikes, while the inverse is true for members. This shows that the company needs to offer better deals for electric bikes to attract casuals to purchase annual memberships.
+
+```{r}
+day_tabyl <- tabyl(year_2022_filtered, day_of_ride, member_casual)
+day_tabyl
+```
+
+
+```{r}
+day_tabyl$total <- day_tabyl$casual + day_tabyl$member
+
+day_order <- c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+day_tabyl$day_of_ride <- factor(day_tabyl$day_of_ride, levels = day_order)
+
+data_long_3 <- pivot_longer(day_tabyl, cols = 
+                          c(casual, member), 
+                          names_to = "membership", 
+                          values_to = "total_trips")
+
+day_plot <- ggplot(data = data_long_3, mapping = aes(x = day_of_ride, y = total_trips, fill = membership)) +
+              geom_bar(stat = 'identity', position = "dodge") +
+              labs(title = "Bike Usage by Day per Membership Type",
+                   x = "Day of Week",
+                   y = "Total Trips") +
+              scale_fill_discrete(name = "Membership Type", labels = c("Casual", "Member")) +
+              theme_minimal()
+
+day_plot <- day_plot + 
+  scale_y_continuous(labels = scales::number_format(scale = 1e-2))
+
+day_plot
+```
+The graph shows that the days with the most casual riders are the weekends, while the total number of member riders increase during the middle of the week. This implies that most casual riders are most likely people who don't ride bikes to commute, meaning they only need bike rides during the weekends when they have free time to travel. On the other hand, members are most likely people who need bikes to commute to work or school, thus resulting in high mid-week numbers.
+
+```{r}
+hour_tabyl <- tabyl(year_2022_filtered, hour_of_ride, member_casual)
+hour_tabyl
+```
+
+
+```{r}
+data_long_4 <- pivot_longer(hour_tabyl, cols =
+                          c(casual, member),
+                          names_to = "membership",
+                          values_to = "total_trips"
+                          )
+
+hour_plot <- ggplot(data = data_long_4, mapping = aes(x = hour_of_ride, y = total_trips, fill = membership)) +
+              geom_bar(stat = 'identity', position = "dodge") +
+              labs(title = "Bike Usage by Hour of Day per Membership Type",
+                   x = "Hour of Day",
+                   y = "Total Trips") +
+              scale_fill_discrete(name = "Membership Type", labels = c("Casual", "Member")) +
+              theme_minimal()
+
+hour_plot <- hour_plot +
+  scale_y_continuous(labels = scales::number_format(scale = 1e-2))
+
+hour_plot <- hour_plot + 
+  scale_x_continuous(breaks = unique(hour_tabyl$hour_of_ride))
+
+hour_plot
+```
+As the day advances, the number of people renting bikes increases, peaking at around 5PM, until it then decreases as night falls and people return home to rest. From the graph, it is apparent that the biggest disparity between casual riders and member riders occur at 7-8AM and 5PM. To increase the number of memberships, it could be worthwhile to create some sort of incentive program, where if membership holders ride on certain 'happy hours' for some distance, they can gain rewards or coupons. This will then give a reason for casual riders to consider getting a membership. 
+
+```{r}
+month_tabyl <- tabyl(year_2022_filtered, month_of_ride, member_casual)
+month_tabyl
+```
+```{r}
+month_order <- c("January", 
+                 "February", 
+                 "March", 
+                 "April", 
+                 "May", 
+                 "June", 
+                 "July",
+                 "August",
+                 "September",
+                 "October",
+                 "November",
+                 "December")
+month_tabyl$month_of_ride <- factor(month_tabyl$month_of_ride, levels = month_order)
+
+data_long_5 <- pivot_longer(month_tabyl, cols =
+                          c(casual, member),
+                          names_to = "membership",
+                          values_to = "total_trips"
+                          )
+
+month_plot <- ggplot(data = data_long_5, mapping = aes(x = month_of_ride, y = total_trips, fill = membership)) +
+              geom_bar(stat = 'identity', position = "dodge") +
+              labs(title = "Bike Usage by Month per Membership Type",
+                   x = "Hour of Day",
+                   y = "Total Trips") +
+              scale_fill_discrete(name = "Membership Type", labels = c("Casual", "Member")) +
+              theme_minimal()
+
+month_plot <- month_plot +
+  scale_y_continuous(labels = scales::number_format(scale = 1e-2))
+
+month_plot <- month_plot +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+month_plot
+```
+The number of riders seem to peak during the middle of the year, when the weather is not too cold. This is evident by the number decreasing during the winter and increasing again as the weather gets warmer as it approaches summer.
+
+The graph shows the greatest disparities between member and casual riders occur during the months September to December. Therefore, to convince these casual riders to buy memberships, I would suggest offering discounted membership prices during these months.
+
+TODO:
+- Average times
+- Stations
+
+```{r}
+start_station_tabyl <- tabyl(year_2022_filtered, start_station_name, member_casual)
+start_station_tabyl$difference <- start_station_tabyl$member - start_station_tabyl$casual
+
+popular_stations_casual <- head(arrange(start_station_tabyl, desc(casual)), n = 11)
+popular_stations_casual <- filter(popular_stations_casual, !is.na(start_station_name))
+
+popular_stations_member <- head(arrange(start_station_tabyl, desc(member)), n = 11)
+popular_stations_member <- filter(popular_stations_member, !is.na(start_station_name))
+
+biggest_difference_membership <- head(arrange(start_station_tabyl, desc(difference), n = 10))
+biggest_difference_membership <- filter(biggest_difference_membership, !is.na(start_station_name))
+biggest_difference_membership
+```
+
+```{r}
+stations_plot <- ggplot(data = biggest_difference_membership, mapping = aes(x = start_station_name, y = difference)) +
+              geom_bar(stat = 'identity', position = "dodge") +
+              labs(title = "Most Popular Stations for Casual Riders",
+                   x = "Station Name",
+                   y = "Total Trips") +
+              theme_minimal()
+
+stations_plot <- stations_plot +
+  scale_y_continuous(labels = scales::number_format(scale = 1e-2))
+
+stations_plot <- stations_plot +
+  theme(axis.text.x = element_text(size = 8))
+
+stations_plot
+```
+
+The above graph shows 5 stations with the biggest disparity between members and casuals. These stations have the biggest difference between riders with memberships, and riders who don't. Therefore, I suggest focusing marketing efforts towards these areas.
+
+I tried to look for these areas on Google Maps, and it would appear that Ellis Ave & 60th St and University Ave & 57th St are stations that are very close to the University of Chicago and Washington Park, two areas with common need for public transport, so the marketing should focus towards attracting casual riders with this fact.
+
+# Conclusion
+
+In conclusion, I found out several interesting insights regarding casual riders and member riders, such as:
+
+* Casuals prefer electric bikes over classic bikes, and vice-versa for members.
+* Most casuals ride on weekends.
+* There is a big disparity in total rides between members and casuals during 7-8AM and 5PM.
+* There is also another big disparity in total rides during the end of the year.
+* There are stations that are not popular with casual riders.
+
+To raise the number of membership subscriptions, based on the insights I gained above, I propose the following solutions:
+
+- Special promotion for electric bikes to convince casuals to buy memberships
+- Some sort of 'day streak' counter, where each day with a ride would count towards a streak. Once the streak reaches a certain number, rewards are given.
+- Focusing promotions during the end of the year (e.g. winter discounts) and locations with less casual riders.
